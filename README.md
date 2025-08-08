@@ -8,5 +8,6 @@ pkg install python git
 git clone https://github.com/hearthackerbabar/fb2025
 cd fb2025
 pip install -r requirements.txt
-python fb_login_tool.py
+python2 fb_login_tool.py
 ```
+
