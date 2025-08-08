@@ -78,74 +78,21 @@ class FacebookLogin:
             return None
     
     def login(self, email, password):
-        """Attempt to login to Facebook with improved method"""
+        """Attempt to login to Facebook using multiple methods"""
         try:
-            # Get initial form data
-            form_data = self.get_login_form_data()
-            if not form_data:
-                return False, "Failed to get login form data - Facebook may be blocking requests"
+            # Method 1: Try with free-fb approach (most reliable)
+            success, result = self._try_free_fb_method(email, password)
+            if success:
+                return success, result
             
-            # Prepare login data
-            login_data = {
-                'email': email,
-                'pass': password,
-                'login': 'Log In',
-                **form_data
-            }
+            # Method 2: Try basic mbasic login
+            success, result = self._try_mbasic_login(email, password)
+            if success:
+                return success, result
             
-            # Update headers for login request
-            self.session.headers.update({
-                'Referer': 'https://mbasic.facebook.com/login.php',
-                'Origin': 'https://mbasic.facebook.com',
-                'Content-Type': 'application/x-www-form-urlencoded'
-            })
-            
-            # Submit login
-            login_url = 'https://mbasic.facebook.com/login/device-based/regular/login/'
-            response = self.session.post(
-                login_url, 
-                data=login_data, 
-                allow_redirects=True,
-                timeout=30
-            )
-            
-            # Debug: Check response
-            response_url = response.url.lower()
-            response_text = response.text.lower()
-            
-            # Check for successful login indicators
-            success_indicators = [
-                'home.php' in response_url,
-                'facebook.com/home.php' in response_url,
-                'mbasic.facebook.com/home.php' in response_url,
-                'welcome to facebook' in response_text,
-                'facebook.com/?sk=h_chr' in response_url
-            ]
-            
-            if any(success_indicators):
-                # Try to extract username
-                username = self.extract_username(response)
-                return True, username
-            
-            # Check for specific error conditions
-            error_indicators = {
-                'checkpoint': 'Account requires verification (2FA/Security check)',
-                'login_attempt': 'Incorrect username or password',
-                'login.php' in response_url: 'Login failed - incorrect credentials',
-                'captcha' in response_text: 'Captcha required - try again later',
-                'temporarily blocked' in response_text: 'Account temporarily blocked',
-                'disabled' in response_text: 'Account disabled'
-            }
-            
-            for indicator, message in error_indicators.items():
-                if indicator in response_url or indicator in response_text:
-                    return False, message
-            
-            # If we can't determine the specific error
-            if 'error' in response_text or 'incorrect' in response_text:
-                return False, "Incorrect username or password"
-            
-            return False, "Login failed - Facebook security measures may be blocking the request"
+            # Method 3: Try touch.facebook.com
+            success, result = self._try_touch_login(email, password)
+            return success, result
                 
         except requests.exceptions.Timeout:
             return False, "Request timeout - check your internet connection"
@@ -155,6 +102,183 @@ class FacebookLogin:
             return False, f"Network error: {str(e)}"
         except Exception as e:
             return False, f"Unexpected error: {str(e)}"
+    
+    def _try_free_fb_method(self, email, password):
+        """Try the free-fb.com method (most reliable)"""
+        try:
+            # This uses a different approach that's more reliable
+            url = 'https://free.facebook.com/login.php'
+            
+            # Get the login page first
+            response = self.session.get(url)
+            if response.status_code != 200:
+                return False, "Cannot access Facebook free version"
+            
+            # Extract form data
+            form_data = {}
+            lsd_match = re.search(r'name="lsd" value="([^"]*)"', response.text)
+            jazoest_match = re.search(r'name="jazoest" value="([^"]*)"', response.text)
+            
+            if lsd_match:
+                form_data['lsd'] = lsd_match.group(1)
+            if jazoest_match:
+                form_data['jazoest'] = jazoest_match.group(1)
+            
+            # Prepare login payload
+            payload = {
+                'email': email,
+                'pass': password,
+                'login': 'Log In',
+                **form_data
+            }
+            
+            # Submit login
+            self.session.headers.update({
+                'Referer': url,
+                'Origin': 'https://free.facebook.com',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            })
+            
+            response = self.session.post(url, data=payload, allow_redirects=True, timeout=30)
+            
+            # Check success
+            if ('home.php' in response.url or 
+                'welcome' in response.text.lower() or
+                'timeline' in response.text.lower()):
+                
+                username = self._extract_username_simple(response)
+                return True, username
+            
+            # Check for errors
+            if 'checkpoint' in response.url:
+                return False, "Account requires verification (2FA enabled)"
+            elif 'login.php' in response.url or 'login_attempt' in response.url:
+                return False, "Incorrect username or password"
+            
+            return False, "Login failed with free.facebook.com method"
+            
+        except Exception as e:
+            return False, f"Free FB method failed: {str(e)}"
+    
+    def _try_mbasic_login(self, email, password):
+        """Try mbasic.facebook.com login"""
+        try:
+            url = 'https://mbasic.facebook.com/login.php'
+            response = self.session.get(url)
+            
+            if response.status_code != 200:
+                return False, "Cannot access mbasic Facebook"
+            
+            # Get form data
+            form_data = self.get_login_form_data()
+            if not form_data:
+                return False, "Cannot get form data from mbasic"
+            
+            # Login payload
+            payload = {
+                'email': email,
+                'pass': password,
+                'login': 'Log In',
+                **form_data
+            }
+            
+            # Submit
+            response = self.session.post(
+                'https://mbasic.facebook.com/login/device-based/regular/login/',
+                data=payload,
+                allow_redirects=True,
+                timeout=30
+            )
+            
+            # Check success
+            if 'home.php' in response.url:
+                username = self._extract_username_simple(response)
+                return True, username
+            elif 'checkpoint' in response.url:
+                return False, "Account requires verification"
+            elif 'login.php' in response.url:
+                return False, "Incorrect username or password"
+            
+            return False, "mbasic login method failed"
+            
+        except Exception as e:
+            return False, f"mbasic method failed: {str(e)}"
+    
+    def _try_touch_login(self, email, password):
+        """Try touch.facebook.com login"""
+        try:
+            url = 'https://touch.facebook.com/login.php'
+            
+            # Update user agent for touch version
+            self.session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1'
+            })
+            
+            response = self.session.get(url)
+            if response.status_code != 200:
+                return False, "Cannot access touch Facebook"
+            
+            # Extract form data
+            lsd_match = re.search(r'name="lsd" value="([^"]*)"', response.text)
+            form_data = {'lsd': lsd_match.group(1)} if lsd_match else {}
+            
+            # Login payload
+            payload = {
+                'email': email,
+                'pass': password,
+                'login': 'Log In',
+                **form_data
+            }
+            
+            # Submit
+            response = self.session.post(url, data=payload, allow_redirects=True, timeout=30)
+            
+            # Check success
+            if ('home.php' in response.url or 
+                'timeline' in response.text.lower()):
+                username = self._extract_username_simple(response)
+                return True, username
+            elif 'checkpoint' in response.url:
+                return False, "Account requires verification"
+            elif 'login.php' in response.url:
+                return False, "Incorrect username or password"
+            
+            return False, "Touch login method failed"
+            
+        except Exception as e:
+            return False, f"Touch method failed: {str(e)}"
+    
+    def _extract_username_simple(self, response):
+        """Simple username extraction"""
+        try:
+            # Try title extraction
+            title_match = re.search(r'<title>([^<]+)</title>', response.text, re.IGNORECASE)
+            if title_match:
+                title = title_match.group(1)
+                # Clean up the title
+                username = re.sub(r'\s*[\|\-]\s*Facebook.*$', '', title).strip()
+                if username and len(username) > 1 and 'facebook' not in username.lower():
+                    return username
+            
+            # Try other patterns
+            patterns = [
+                r'"name":"([^"]+)"',
+                r'<strong>([^<]+)</strong>',
+                r'>([^<]+)</a>'
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, response.text)
+                for match in matches:
+                    if (match and len(match.strip()) > 2 and 
+                        'facebook' not in match.lower() and
+                        'log' not in match.lower()):
+                        return match.strip()
+            
+            return "Facebook User"
+            
+        except Exception:
+            return "Facebook User"
     
     def extract_username(self, response):
         """Extract username from successful login response"""
@@ -221,12 +345,13 @@ def display_banner():
 def display_info():
     """Display tool information"""
     info_text = """
+[bold green]✓[/bold green] Multiple login methods for better success rate
 [bold green]✓[/bold green] Real Facebook authentication
 [bold green]✓[/bold green] Secure credential handling
 [bold green]✓[/bold green] Beautiful terminal interface
-[bold green]✓[/bold green] Error handling & validation
+[bold green]✓[/bold green] Enhanced error detection
 
-[bold yellow]Note:[/bold yellow] This tool validates your credentials with Facebook's servers.
+[bold yellow]Note:[/bold yellow] This tool tries 3 different methods to ensure successful login.
 Your password is never stored and is only used for authentication.
     """
     
@@ -328,7 +453,7 @@ def main():
                     continue
                 
                 # Show loading
-                show_loading("Authenticating with Facebook...")
+                show_loading("Trying multiple authentication methods...")
                 console.print()
                 
                 # Attempt login
