@@ -24,86 +24,177 @@ class FacebookLogin:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SM-A205U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         })
     
     def get_login_form_data(self):
         """Get the login form data from Facebook's mobile login page"""
         try:
-            url = 'https://m.facebook.com/login.php'
+            # First, get the main login page
+            url = 'https://mbasic.facebook.com/login.php'
             response = self.session.get(url)
             
-            # Extract necessary form data
-            lsd = re.search(r'name="lsd" value="([^"]*)"', response.text)
-            jazoest = re.search(r'name="jazoest" value="([^"]*)"', response.text)
-            m_ts = re.search(r'name="m_ts" value="([^"]*)"', response.text)
-            li = re.search(r'name="li" value="([^"]*)"', response.text)
+            if response.status_code != 200:
+                return None
             
-            form_data = {
-                'lsd': lsd.group(1) if lsd else '',
-                'jazoest': jazoest.group(1) if jazoest else '',
-                'm_ts': m_ts.group(1) if m_ts else '',
-                'li': li.group(1) if li else '',
-                'try_number': '0',
-                'unrecognized_tries': '0',
-                'bi_xrwh': '0'
+            # Extract all necessary form data with more robust patterns
+            patterns = {
+                'lsd': [r'name="lsd" value="([^"]*)"', r'"LSD",\[],{"token":"([^"]*)"'],
+                'jazoest': [r'name="jazoest" value="([^"]*)"'],
+                'm_ts': [r'name="m_ts" value="([^"]*)"'],
+                'li': [r'name="li" value="([^"]*)"'],
+                'try_number': [r'name="try_number" value="([^"]*)"'],
+                'unrecognized_tries': [r'name="unrecognized_tries" value="([^"]*)"']
             }
             
+            form_data = {}
+            
+            for field, pattern_list in patterns.items():
+                value = ''
+                for pattern in pattern_list:
+                    match = re.search(pattern, response.text)
+                    if match:
+                        value = match.group(1)
+                        break
+                form_data[field] = value
+            
+            # Set default values if not found
+            form_data.setdefault('try_number', '0')
+            form_data.setdefault('unrecognized_tries', '0')
+            
             return form_data
+            
         except Exception as e:
-            console.print(f"[red]Error getting form data: {str(e)}[/red]")
             return None
     
     def login(self, email, password):
-        """Attempt to login to Facebook"""
+        """Attempt to login to Facebook with improved method"""
         try:
             # Get initial form data
             form_data = self.get_login_form_data()
             if not form_data:
-                return False, "Failed to get login form data"
+                return False, "Failed to get login form data - Facebook may be blocking requests"
             
-            # Add credentials to form data
-            form_data.update({
+            # Prepare login data
+            login_data = {
                 'email': email,
                 'pass': password,
-                'login': 'Log In'
+                'login': 'Log In',
+                **form_data
+            }
+            
+            # Update headers for login request
+            self.session.headers.update({
+                'Referer': 'https://mbasic.facebook.com/login.php',
+                'Origin': 'https://mbasic.facebook.com',
+                'Content-Type': 'application/x-www-form-urlencoded'
             })
             
-            # Submit login form
-            login_url = 'https://m.facebook.com/login/device-based/regular/login/?refsrc=deprecated&lwv=100'
-            response = self.session.post(login_url, data=form_data, allow_redirects=True)
+            # Submit login
+            login_url = 'https://mbasic.facebook.com/login/device-based/regular/login/'
+            response = self.session.post(
+                login_url, 
+                data=login_data, 
+                allow_redirects=True,
+                timeout=30
+            )
             
-            # Check if login was successful
-            if 'home.php' in response.url or 'facebook.com/?sk=h_chr' in response.url:
-                # Get user's name from the page
-                name_match = re.search(r'<title>([^<]+)</title>', response.text)
-                if name_match:
-                    username = name_match.group(1).replace(' | Facebook', '').strip()
-                else:
-                    # Try alternative method to get username
-                    profile_url = 'https://m.facebook.com/profile.php'
-                    profile_response = self.session.get(profile_url)
-                    name_match = re.search(r'<title>([^<]+)</title>', profile_response.text)
-                    username = name_match.group(1).replace(' | Facebook', '').strip() if name_match else "User"
-                
+            # Debug: Check response
+            response_url = response.url.lower()
+            response_text = response.text.lower()
+            
+            # Check for successful login indicators
+            success_indicators = [
+                'home.php' in response_url,
+                'facebook.com/home.php' in response_url,
+                'mbasic.facebook.com/home.php' in response_url,
+                'welcome to facebook' in response_text,
+                'facebook.com/?sk=h_chr' in response_url
+            ]
+            
+            if any(success_indicators):
+                # Try to extract username
+                username = self.extract_username(response)
                 return True, username
             
-            elif 'checkpoint' in response.url:
-                return False, "Account requires verification (checkpoint)"
-            elif 'login_attempt' in response.url or 'login.php' in response.url:
+            # Check for specific error conditions
+            error_indicators = {
+                'checkpoint': 'Account requires verification (2FA/Security check)',
+                'login_attempt': 'Incorrect username or password',
+                'login.php' in response_url: 'Login failed - incorrect credentials',
+                'captcha' in response_text: 'Captcha required - try again later',
+                'temporarily blocked' in response_text: 'Account temporarily blocked',
+                'disabled' in response_text: 'Account disabled'
+            }
+            
+            for indicator, message in error_indicators.items():
+                if indicator in response_url or indicator in response_text:
+                    return False, message
+            
+            # If we can't determine the specific error
+            if 'error' in response_text or 'incorrect' in response_text:
                 return False, "Incorrect username or password"
-            else:
-                return False, "Login failed - unknown error"
+            
+            return False, "Login failed - Facebook security measures may be blocking the request"
                 
+        except requests.exceptions.Timeout:
+            return False, "Request timeout - check your internet connection"
+        except requests.exceptions.ConnectionError:
+            return False, "Connection error - check your internet connection"
         except requests.exceptions.RequestException as e:
             return False, f"Network error: {str(e)}"
         except Exception as e:
             return False, f"Unexpected error: {str(e)}"
+    
+    def extract_username(self, response):
+        """Extract username from successful login response"""
+        try:
+            # Try multiple methods to get username
+            patterns = [
+                r'<title>([^<]+?)\s*\|\s*Facebook</title>',
+                r'<title>([^<]+?)\s*-\s*Facebook</title>',
+                r'"name":"([^"]+)"',
+                r'data-gt=\'{"tn":"C"}\'>([^<]+)</a>',
+                r'<strong[^>]*>([^<]+)</strong>'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, response.text, re.IGNORECASE)
+                if match:
+                    username = match.group(1).strip()
+                    # Clean up common suffixes
+                    username = re.sub(r'\s*\|\s*Facebook.*$', '', username)
+                    username = re.sub(r'\s*-\s*Facebook.*$', '', username)
+                    if username and len(username) > 1:
+                        return username
+            
+            # Fallback: try to get from profile page
+            try:
+                profile_response = self.session.get('https://mbasic.facebook.com/profile.php', timeout=10)
+                for pattern in patterns:
+                    match = re.search(pattern, profile_response.text, re.IGNORECASE)
+                    if match:
+                        username = match.group(1).strip()
+                        username = re.sub(r'\s*\|\s*Facebook.*$', '', username)
+                        if username and len(username) > 1:
+                            return username
+            except:
+                pass
+            
+            return "Facebook User"
+            
+        except Exception:
+            return "Facebook User"
 
 def display_banner():
     """Display the tool banner"""
